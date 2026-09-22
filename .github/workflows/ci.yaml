@@ -1,0 +1,159 @@
+name: CI
+
+env:
+    APP_ENV: test
+    PHP_VERSION: '8.4'
+
+on:
+    push:
+        branches:
+            - 'main'
+    pull_request:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    tests:
+        name: Tests
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  coverage: none
+
+            - name: Install dependencies
+              uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+              with:
+                  require-lock-file: true
+
+            - name: Validate database schema
+              run: php bin/console doctrine:schema:validate --skip-sync -vvv --no-interaction
+
+            - name: Setup database
+              run: |
+                  php bin/console doctrine:schema:update --force
+
+            - name: Run tests
+              run: vendor/bin/phpunit
+
+    lint:
+        name: Lint
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  tools: symfony-cli
+                  coverage: none
+
+            - name: Validate Composer files
+              run: composer validate --strict --no-check-publish
+
+            - name: Install dependencies
+              uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+              with:
+                  require-lock-file: true
+
+            - name: Lint container
+              run: php bin/console lint:container --env=prod
+
+            - name: Lint Twig
+              run: php bin/console lint:twig templates --env=prod
+
+            - name: Lint YAML
+              run: php bin/console lint:yaml config --parse-tags
+
+            - name: Lint XLIFF translations
+              run: php bin/console lint:xliff translations --format=github
+
+            - name: Lint translations
+              run: php bin/console lint:translations
+
+            - name: Lint Doctrine entities
+              run: php bin/console doctrine:schema:validate --skip-sync -vvv --no-interaction
+
+            - name: Symfony diagnostics
+              run: symfony lsp:check --format=github
+
+            - name: Compile assets
+              run: php bin/console asset-map:compile --env=prod
+
+            - name: Warm production cache
+              run: APP_DEBUG=0 php bin/console cache:warmup --env=prod
+
+    php-cs-fixer:
+        name: PHP CS Fixer
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  coverage: none
+
+            - name: Install dependencies
+              uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+              with:
+                  require-lock-file: true
+
+            - name: Check code style
+              run: vendor/bin/php-cs-fixer check --diff --using-cache=no
+
+    phpstan:
+        name: PHPStan
+        runs-on: ubuntu-latest
+        env:
+            APP_ENV: dev
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  coverage: none
+
+            - name: Install dependencies
+              uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+              with:
+                  require-lock-file: true
+
+            - name: Restore PHPStan result cache
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: /tmp/phpstan
+                  key: phpstan-result-cache-v1-${{ env.PHP_VERSION }}-${{ github.run_id }}
+                  restore-keys: |
+                      phpstan-result-cache-v1-${{ env.PHP_VERSION }}-
+
+            - name: Run PHPStan
+              run: vendor/bin/phpstan analyse --no-progress
+
+            - name: Save PHPStan result cache
+              uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              if: ${{ !cancelled() }}
+              with:
+                  path: /tmp/phpstan
+                  key: phpstan-result-cache-v1-${{ env.PHP_VERSION }}-${{ github.run_id }}
